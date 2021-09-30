@@ -29,7 +29,10 @@
 #include <netlink/route/link/vrf.h>
 
 #include <linux/if_link.h>
+
+#ifndef __ANDROID__
 #include <linux-private/linux/rtnetlink.h>
+#endif
 
 #define VRF_TABLE_ID_MAX  RT_TABLE_MAX
 
