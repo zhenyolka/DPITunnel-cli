@@ -9,6 +9,9 @@
 #include <cstring>
 #include <chrono>
 #include <string>
+#include <fcntl.h>
+#include <poll.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
@@ -18,123 +21,244 @@
 #include <thread>
 #include <unistd.h>
 
+extern struct Settings_perst_s Settings_perst;
 extern struct Profile_s Profile;
 
-int count_hops(std::string server_ip, int server_port) {
-	int sock;
+int connect_with_timeout(int sockfd, const struct sockaddr *addr, socklen_t addrlen, unsigned int timeout_ms) {
+	int rc = 0;
+	// Set O_NONBLOCK
+	int sockfd_flags_before;
+	if((sockfd_flags_before=fcntl(sockfd,F_GETFL,0)<0)) return -1;
+	if(fcntl(sockfd,F_SETFL,sockfd_flags_before | O_NONBLOCK)<0) return -1;
+	// Start connecting (asynchronously)
+	do {
+		if (connect(sockfd, addr, addrlen)<0) {
+			// Did connect return an error? If so, we'll fail.
+			if ((errno != EWOULDBLOCK) && (errno != EINPROGRESS)) {
+				rc = -1;
+			}
+			// Otherwise, we'll wait for it to complete.
+			else {
+				// Set a deadline timestamp 'timeout' ms from now (needed b/c poll can be interrupted)
+				struct timespec now;
+				if(clock_gettime(CLOCK_MONOTONIC, &now)<0) { rc=-1; break; }
+				struct timespec deadline = { .tv_sec = now.tv_sec,
+								.tv_nsec = now.tv_nsec + timeout_ms*1000000l};
+				// Wait for the connection to complete.
+        	        	do {
+					// Calculate how long until the deadline
+					if(clock_gettime(CLOCK_MONOTONIC, &now)<0) { rc=-1; break; }
+					int ms_until_deadline = (int)(  (deadline.tv_sec  - now.tv_sec)*1000l
+							+ (deadline.tv_nsec - now.tv_nsec)/1000000l);
+					if(ms_until_deadline<0) { rc=0; break; }
+					// Wait for connect to complete (or for the timeout deadline)
+					struct pollfd pfds[] = { { .fd = sockfd, .events = POLLOUT } };
+					rc = poll(pfds, 1, ms_until_deadline);
+					// If poll 'succeeded', make sure it *really* succeeded
+					if(rc>0) {
+						int error = 0; socklen_t len = sizeof(error);
+						int retval = getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &error, &len);
+						if(retval==0) errno = error;
+						if(error!=0) rc=-1;
+					}
+				}
+				// If poll was interrupted, try again.
+				while(rc==-1 && errno==EINTR);
+				// Did poll timeout? If so, fail.
+                		if(rc==0) {
+					errno = ETIMEDOUT;
+					rc=-1;
+				}
+			}
+        	}
+	} while(0);
+	// Restore original O_NONBLOCK state
+	if(fcntl(sockfd,F_SETFL,sockfd_flags_before)<0) return -1;
+	// Success
+	return rc;
+}
+
+short count_hops_private(struct sockaddr_in server_address, std::string ip, int port) {
+	// Init remote server socket
+	int server_socket = socket(AF_INET, SOCK_STREAM, 0);
+	if(server_socket == -1) {
+		std::cerr << "Can't create remote server socket. Errno " << std::strerror(errno) << std::endl;
+		return -1;
+	}
+
+	// Start sniff thread to sniff SYN, ACK from server to calculate sequence numbers for payload
 	std::atomic<bool> flag(true);
-	std::atomic<int> local_port_atom(-1);
+	std::atomic<int> local_port(-1);
 	std::atomic<int> status;
-	std::thread sniff_thread;
-	std::string sniffed_handshake_packet;
-	sniff_thread = std::thread(sniff_handshake_packet, &sniffed_handshake_packet,
-					server_ip, server_port, &local_port_atom, &flag, &status);
+	std::string sniffed_packet;
+	std::thread sniff_thread = std::thread(sniff_handshake_packet, &sniffed_packet,
+		ip, port, &local_port, &flag, &status);
+
+	// Connect to remote server
 	auto start = std::chrono::high_resolution_clock::now();
-	if(init_remote_server_socket(sock, server_ip, server_port) == -1) {
+	if(connect_with_timeout(server_socket, (struct sockaddr *) &server_address, sizeof(server_address), Settings_perst.count_hops_connect_timeout) < 0) {
 		// Stop sniff thread
-		flag = false;
+		flag.store(false);
 		if(sniff_thread.joinable()) sniff_thread.join();
-		close(sock);
+		close(server_socket);
 		return -1;
 	}
 	auto stop = std::chrono::high_resolution_clock::now();
 	unsigned int connect_time = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
 
-	// Get local port to choose proper SYN, ACK packet
+	// Get local port to choose proper packet
 	struct sockaddr_in local_addr;
 	socklen_t len = sizeof(local_addr);
-	if(getsockname(sock, (struct sockaddr *) &local_addr, &len) == -1) {
+	if(getsockname(server_socket, (struct sockaddr *) &local_addr, &len) == -1) {
 		std::cerr << "Failed to get local port. Errno: " << std::strerror(errno) << std::endl;
 		// Stop sniff thread
-		flag = false;
+		flag.store(false);
 		if(sniff_thread.joinable()) sniff_thread.join();
-		close(sock);
+		close(server_socket);
 		return -1;
 	}
-	int local_port = ntohs(local_addr.sin_port);
-	local_port_atom.store(local_port);
+	local_port.store(ntohs(local_addr.sin_port));
 
-	// Get received ACK packet
+	// Get received SYN, ACK packet
 	if(sniff_thread.joinable()) sniff_thread.join();
 	if(status.load() == -1) {
 		std::cerr << "Failed to capture handshake packet" << std::endl;
-		close(sock);
+		close(server_socket);
 		return -1;
 	}
 
-	// Fill server address
-        struct sockaddr_in serv_addr;
-        serv_addr.sin_family = AF_INET;
-        serv_addr.sin_addr.s_addr = inet_addr(server_ip.c_str());
-        serv_addr.sin_port = htons(server_port);
-        std::memset(serv_addr.sin_zero, '\0', sizeof(serv_addr.sin_zero));
-
-	// Create raw socket to send packets with low ttl
+	// Create raw socket to send fake packets
 	int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP);
-        if(sockfd == -1) {
-                std::cerr << "Sniff raw socket creation failure. Errno: " << std::strerror(errno) << std::endl;
-		close(sock);
-                return -1;
-        }
+	if(sockfd == -1) {
+		std::cerr << "Fake raw socket creation failure. Errno: " << std::strerror(errno) << std::endl;
+		close(server_socket);
+		return -1;
+	}
 
+	// Disable send buffer to send packets immediately
+	int sndbuf_size = 0;
+	if(setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size)) < 0) {
+		std::cerr << "Failed to set raw socket buffer size to 0. Errno: "
+			<< std::strerror(errno) << std::endl;
+		close(sockfd);
+		close(server_socket);
+		return -1;
+	}
 	// Tell system we will include IP header in packet
-        int yes = 1;
-        if(setsockopt(sockfd, IPPROTO_IP, IP_HDRINCL, &yes, sizeof(yes)) < 0) {
-                std::cerr << "Failed to enable IP_HDRINCL. Errno: " << std::strerror(errno) << std::endl;
-		close(sock);
-                close(sockfd);
-                return -1;
-        }
+	int yes = 1;
+	if(setsockopt(sockfd, IPPROTO_IP, IP_HDRINCL, &yes, sizeof(yes)) < 0) {
+		std::cerr << "Failed to enable IP_HDRINCL. Errno: " << std::strerror(errno) << std::endl;
+		close(sockfd);
+		close(server_socket);
+		return -1;
+	}
 
-	// Send packet, increase ttl, wait for ACK
-	std::string sniffed_ack_packet;
-	std::string packet_fake;
-	std::string data_empty(255, '\x00');
-	unsigned int ttl = 1;
-	flag.store(true);
-	uint8_t flags = TH_PUSH | TH_ACK;
-	sniff_thread = std::thread(sniff_ack_packet, &sniffed_ack_packet, server_ip, server_port, local_port, &flag);
-	while(flag.load() && ttl <= 255) {
-		packet_fake = form_packet(sniffed_handshake_packet, data_empty.c_str(), ttl, rand() % 65535,
-						ttl, 0, 1, 128, true, &flags);
-		if(send_string_raw(sockfd, packet_fake, packet_fake.size(),
-			(struct sockaddr*) &serv_addr, sizeof(serv_addr)) == -1) {
-			// Stop sniff thread
-			flag.store(false);
-			if(sniff_thread.joinable()) sniff_thread.join();
-			close(sock);
-			close(sockfd);
-			return -1;
+	// Store window
+	int window_size;
+	socklen_t size = sizeof(window_size);
+	if(getsockopt(server_socket, IPPROTO_TCP, TCP_MAXSEG, &window_size, &size) < 0) {
+		std::cerr << "Failed to get default MSS from remote server socket. Errno: "
+			<< std::strerror(errno) << std::endl;
+		close(sockfd);
+		close(server_socket);
+		return -1;
+	}
+
+	// Send packet and wait for connect_time*2 for response
+	int timeout = connect_time * 2;
+	std::string null_byte(1, '\x00');
+	std::string buffer(100, ' ');
+	for(short ttl = 1; ttl <= 255; ttl++) {
+		std::string payload_packet = form_packet(sniffed_packet, null_byte.c_str(), null_byte.size(),
+						rand() % 65535, ttl, 0, 1, window_size, true);
+		if(sendto(sockfd, &payload_packet[0], payload_packet.size(), 0, (const sockaddr*) &server_address, sizeof(sockaddr)) < 0) {
+			std::cerr << "Failed to send packet from raw socket. Errno: "
+				<< std::strerror(errno) << std::endl;
+			break;
 		}
 
-		ttl++;
+		struct pollfd fds[1];
+		fds[0].fd = sockfd;
+		fds[0].events = POLLIN;
+
+		start = std::chrono::high_resolution_clock::now();
+		bool is_received_reply = false;
+		for(;;) {
+			auto stop = std::chrono::high_resolution_clock::now();
+			if(std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count() >= timeout)
+				break;
+
+			int ret = poll(fds, 1, timeout - std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count());
+			if (ret == -1) {
+				std::cerr << "Poll error. Errno:" << std::strerror(errno) << std::endl;
+				break;
+			} else if (ret == 0)
+				continue;
+			else {
+				if(fds[0].revents & POLLERR ||
+					fds[0].revents & POLLHUP ||
+					fds[0].revents & POLLNVAL)
+					break;
+
+				// Match packet by remote ip, remote port, local port and print
+				if (fds[0].revents & POLLIN) {
+					ssize_t read_size = recv(sockfd, &buffer[0], buffer.size(), 0);
+					if(read_size < 0) {
+						std::cerr << "Response packet read error. Errno: "
+						<< std::strerror(errno) << std::endl;
+						break;
+					}
+
+					// Get IP header of received packet
+					iphdr* ip_h = (iphdr*) &buffer[0];
+					// Get TCP header of received packet
+					tcphdr* tcp_h = (tcphdr*) (&buffer[0] + ip_h->ihl * 4);
+					// Get source port (server port)
+					int port_src_recv = ntohs(tcp_h->source);
+					// Get dest port (client port)
+					int port_dst_recv = ntohs(tcp_h->dest);
+					if(ip_h->saddr == server_address.sin_addr.s_addr &&
+						port_src_recv == port && port_dst_recv == local_port) {
+						is_received_reply = true;
+						break;
+					}
+
+				}
+
+				fds[0].revents = 0;
+			}
+		}
+
+		if(is_received_reply) {
+			close(sockfd);
+			close(server_socket);
+			return ttl;
+		}
 	}
 
-	// Wait for ACK packet to come
-	std::this_thread::sleep_for(std::chrono::milliseconds(2 * connect_time));
-	// Stop sniff thread
-	flag.store(false);
-	if(sniff_thread.joinable()) sniff_thread.join();
-
-	close(sock);
 	close(sockfd);
+	close(server_socket);
+	return -1;
+}
 
-	// Check if it received any packet
-	if(sniffed_ack_packet.empty())
+int count_hops(std::string server_ip, int server_port) {
+	// Add port and address
+	struct sockaddr_in server_address;
+	server_address.sin_family = AF_INET;
+	server_address.sin_port = htons(server_port);
+	if(inet_pton(AF_INET, server_ip.c_str(), &server_address.sin_addr) <= 0) {
+		std::cerr << "Invalid remote server ip address" << std::endl;
 		return -1;
-	// Get ACK num from received packet to know on which packet server reply
-        iphdr* ip_h = (iphdr*) &sniffed_ack_packet[0];
-        tcphdr* tcp_h = (tcphdr*) (&sniffed_ack_packet[0] + ip_h->ihl * 4);
-	unsigned int ack_2 = ntohl(tcp_h->ack_seq);
-	// Get ACK from first packet received during handshake
-	ip_h = (iphdr*) &sniffed_handshake_packet[0];
-	tcp_h = (tcphdr*) (&sniffed_handshake_packet[0] + ip_h->ihl * 4);
-	unsigned int ack_1 = ntohl(tcp_h->ack_seq);
+	}
 
-	unsigned int hops = ack_2 - ack_1;
-	if(hops < 1 || hops > 255)
-		return -1;
-	return hops;
+	// Find the minimum TTL value that allows packet to come to server
+	short ttl = 256;
+	short res;
+	for(int i = 1; i <= 3; i++)
+		if((res = count_hops_private(server_address, server_ip, server_port)) != -1)
+			if(res < ttl) ttl = res;
+
+	return ttl == 256 ? -1 : ttl;
 }
 
 int init_remote_server_socket(int & server_socket, std::string server_ip, int server_port) {

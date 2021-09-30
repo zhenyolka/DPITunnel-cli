@@ -137,7 +137,7 @@ int check_https_response(int socket, std::string host, std::string ip, int port,
 
 		// Check timeout
                 auto stop = std::chrono::high_resolution_clock::now();
-                if(std::chrono::duration_cast<std::chrono::seconds>(stop - start).count() > Profile.test_ssl_handshake_timeout) {
+                if(std::chrono::duration_cast<std::chrono::seconds>(stop - start).count() > Settings_perst.test_ssl_handshake_timeout) {
                         std::cout << "SSL handshake timeout" << std::endl;
                         SSL_free(ssl);
                         close(socket);
@@ -263,7 +263,7 @@ int test_desync_attack(std::string host, std::string ip, int port, bool is_https
         if(init_remote_server_socket(socket, ip, port) == -1) {
                 std::cout << "Resource blocked by IP. I can't help. Use VPN or proxy :((" << std::endl;
                 // Stop sniff thread
-                flag = false;
+                flag.store(false);
                 if(sniff_thread.joinable()) sniff_thread.join();
 		close(socket);
                 return -1;
@@ -277,7 +277,7 @@ int test_desync_attack(std::string host, std::string ip, int port, bool is_https
                 std::cerr << "Can't disable TCP Nagle's algorithm with setsockopt(). Errno: "
                                 << std::strerror(errno) << std::endl;
 		// Stop sniff thread
-		flag = false;
+		flag.store(false);
 		if(sniff_thread.joinable()) sniff_thread.join();
                 close(socket);
                 return -1;
@@ -289,7 +289,7 @@ int test_desync_attack(std::string host, std::string ip, int port, bool is_https
 	if(getsockname(socket, (struct sockaddr *) &local_addr, &len) == -1) {
 		std::cerr << "Failed to get local port. Errno: " << std::strerror(errno) << std::endl;
 		// Stop sniff thread
-		flag = false;
+		flag.store(false);
 		if(sniff_thread.joinable()) sniff_thread.join();
 		close(socket);
 		return -1;
@@ -315,11 +315,18 @@ void show_configured_options(std::string host, std::string ip, int port, bool is
 	if(Profile.desync_zero_attack != DESYNC_ZERO_NONE ||
 		Profile.desync_first_attack == DESYNC_FIRST_DISORDER_FAKE || Profile.desync_first_attack == DESYNC_FIRST_SPLIT_FAKE) {
 		std::cout << "Calculating minimum working ttl..." << std::endl;
-		int result;
-		do {
-			Profile.fake_packets_ttl--;
+		short result = -1;
+		int fake_packets_ttl = Profile.fake_packets_ttl;
+		Profile.fake_packets_ttl = 1;
+		while(Profile.fake_packets_ttl <= fake_packets_ttl && result == -1) {
 			result = test_desync_attack(host, ip, port, is_https, ctx, store);
-		} while(Profile.fake_packets_ttl >= 1 && result != -1);
+			// Test attack 3 times to ensure it work all times
+			if(result != -1)
+				for(short i = 1; i <= 3; i++)
+					result = std::min(result, (short) test_desync_attack(host, ip, port, is_https, ctx, store));
+			Profile.fake_packets_ttl++;
+		}
+		Profile.fake_packets_ttl--;
 		std::cout << std::endl;
 		display_ttl = true;
 	}
@@ -332,7 +339,7 @@ void show_configured_options(std::string host, std::string ip, int port, bool is
 	if(Profile.window_scale_factor != -1)
 		std::cout << "-wsfactor " << Profile.window_scale_factor << ' ';
 	if(display_ttl)
-		std::cout << "-ttl " << Profile.fake_packets_ttl + 1 << ' ';
+		std::cout << "-ttl " << Profile.fake_packets_ttl << ' ';
 	if(is_https)
 		std::cout << "-ca-bundle-path \"" << Settings_perst.ca_bundle_path << "\" ";
 	if(Profile.desync_zero_attack != DESYNC_ZERO_NONE || Profile.desync_first_attack != DESYNC_FIRST_NONE)
@@ -340,11 +347,33 @@ void show_configured_options(std::string host, std::string ip, int port, bool is
 	if(Profile.desync_zero_attack != DESYNC_ZERO_NONE) {
 		std::cout << ZERO_ATTACKS_NAMES.at(Profile.desync_zero_attack);
 		if(Profile.desync_first_attack != DESYNC_FIRST_NONE)
-			std::cout << ", ";
+			std::cout << ",";
 	}
 	if(Profile.desync_first_attack != DESYNC_FIRST_NONE)
 		std::cout << FIRST_ATTACKS_NAMES.at(Profile.desync_first_attack);
 	std::cout << std::endl;
+}
+
+int test_desync_attack_wrapper(std::string host, std::string ip, int port, bool is_https, SSL_CTX *ctx, X509_STORE *store) {
+	if(test_desync_attack(host, ip, port, is_https, ctx, store) == -1)
+		std::cout << "\tFail" << std::endl << std::endl;
+	else {
+		// Check does attack work all times
+		short res = 0;
+		for (short i = 1; i <= 3; i++)
+			res = std::min(res, (short) test_desync_attack(host, ip, port, is_https, ctx, store));
+		if(res == -1)
+			std::cout << "\tFail. Attack don't work all times" << std::endl << std::endl;
+		else {
+			std::cout << "\tSuccess" << std::endl << std::endl;
+			show_configured_options(host, ip, port, is_https, ctx, store);
+			if(is_https)
+				SSL_CTX_free(ctx);
+				return 0;
+		}
+	}
+
+	return -1;
 }
 
 int run_autoconf() {
@@ -438,66 +467,30 @@ int run_autoconf() {
 		Profile.desync_attacks = true;
 		Profile.split_at_sni = true;
 		Profile.desync_first_attack = DESYNC_FIRST_SPLIT;
-		if(test_desync_attack(host, ip, port, is_https, ctx, store) == -1)
-			std::cout << "\tFail" << std::endl << std::endl;
-		else {
-			// Check is attack works all times
-                        if(std::min({test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store)}) == -1)
-                                std::cout << "\tFail. Attack don't work all times" << std::endl << std::endl;
-			else {
-				std::cout << "\tSuccess" << std::endl << std::endl;
-				show_configured_options(host, ip, port, is_https, ctx, store);
-				if(is_https)
-					SSL_CTX_free(ctx);
-				return 0;
-			}
-		}
+		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
 
 		// Try disorder attack
 		std::cout << "\tTrying disorder attack..." << std::endl;
 		if(i == 2)
 			std::cout << "\t(set low TCP window size)" << std::endl;
 		Profile.desync_first_attack = DESYNC_FIRST_DISORDER;
-		if(test_desync_attack(host, ip, port, is_https, ctx, store) == -1)
-			std::cout << "\tFail" << std::endl << std::endl;
-		else {
-			// Check is attack works all times
-                        if(std::min({test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store)}) == -1)
-                                std::cout << "\tFail. Attack don't work all times" << std::endl << std::endl;
-			else {
-				std::cout << "\tSuccess" << std::endl << std::endl;
-				show_configured_options(host, ip, port, is_https, ctx, store);
-				if(is_https)
-					SSL_CTX_free(ctx);
-	        		return 0;
-			}
-		}
+		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
+		
 		if(i == 2) {
 			Profile.window_size = 0;
 			Profile.window_scale_factor = -1;
 		}
 	}
 
-	std::cout << "\tCalculating network distance to site..." << std::endl;
-	// Do 3 measurements as hops count may differ time to time
-	short min_hops = 256;
-	for(unsigned short i = 1; i <= 5; i++) {
-		short hops = count_hops(ip, port);
-		std::this_thread::sleep_for(std::chrono::milliseconds(500));
-		if(hops == -1) continue;
-		if(hops < min_hops) min_hops = hops;
-	}
-	if(min_hops == 256) {
+	std::cout << "\tCalculating network distance to server..." << std::endl;
+	short hops = count_hops(ip, port);
+	if(hops == -1) {
 		std::cout << "\tFail" << std::endl;
 		if(is_https)
 			SSL_CTX_free(ctx);
 		return -1;
 	}
-	Profile.fake_packets_ttl = min_hops - 1;
+	Profile.fake_packets_ttl = hops - 1;
 	std::cout << "\tHops to site: " << Profile.fake_packets_ttl + 1 << std::endl << std::endl;
 
 	for(unsigned short i = 1; i <= 2; i++) {
@@ -510,44 +503,15 @@ int run_autoconf() {
 		if(i == 2)
 			std::cout << "\t(set low TCP window size)" << std::endl;
 		Profile.desync_first_attack = DESYNC_FIRST_DISORDER_FAKE;
-		if(test_desync_attack(host, ip, port, is_https, ctx, store) == -1)
-        	        std::cout << "\tFail" << std::endl << std::endl;
-	        else {
-			// Check is attack works all times
-                        if(std::min({test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store)}) == -1)
-                                std::cout << "\tFail. Attack don't work all times" << std::endl << std::endl;
-			else {
-	                	std::cout << "\tSuccess" << std::endl << std::endl;
-        	        	show_configured_options(host, ip, port, is_https, ctx, store);
-	        	        if(is_https)
-        	        	        SSL_CTX_free(ctx);
-	        	        return 0;
-			}
-	        }
+		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
 
 		// Try split fake attack
 		std::cout << "\tTrying split(fake) attack..." << std::endl;
 		if(i == 2)
 			std::cout << "\t(set low TCP window size)" << std::endl;
 		Profile.desync_first_attack = DESYNC_FIRST_SPLIT_FAKE;
-		if(test_desync_attack(host, ip, port, is_https, ctx, store) == -1)
-        	        std::cout << "\tFail" << std::endl << std::endl;
-	        else {
-			// Check is attack works all times
-                        if(std::min({test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store)}) == -1)
-                                std::cout << "\tFail. Attack don't work all times" << std::endl << std::endl;
-			else {
-	                	std::cout << "\tSuccess" << std::endl << std::endl;
-        	        	show_configured_options(host, ip, port, is_https, ctx, store);
-	        	        if(is_https)
-        	        	        SSL_CTX_free(ctx);
-	        	        return 0;
-			}
-	        }
+		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
+
 		if(i == 2) {
 			Profile.window_size = 0;
 			Profile.window_scale_factor = -1;
@@ -558,62 +522,17 @@ int run_autoconf() {
 	std::cout << "\tTrying fake packet attack..." << std::endl;
 	Profile.desync_first_attack = DESYNC_FIRST_NONE;
 	Profile.desync_zero_attack = DESYNC_ZERO_FAKE;
-	if(test_desync_attack(host, ip, port, is_https, ctx, store) == -1)
-		std::cout << "\tFail" << std::endl << std::endl;
-	else {
-		// Check is attack works all times
-                if(std::min({test_desync_attack(host, ip, port, is_https, ctx, store),
-				test_desync_attack(host, ip, port, is_https, ctx, store),
-				test_desync_attack(host, ip, port, is_https, ctx, store)}) == -1)
-			std::cout << "\tFail. Attack don't work all times" << std::endl << std::endl;
-		else {
-			std::cout << "\tSuccess" << std::endl << std::endl;
-			show_configured_options(host, ip, port, is_https, ctx, store);
-			if(is_https)
-				SSL_CTX_free(ctx);
-			return 0;
-		}
-	}
+	if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
 
 	// Try RST attack
 	std::cout << "\tTrying RST attack..." << std::endl;
 	Profile.desync_zero_attack = DESYNC_ZERO_RST;
-	if(test_desync_attack(host, ip, port, is_https, ctx, store) == -1)
-		std::cout << "\tFail" << std::endl << std::endl;
-	else {
-		// Check is attack works all times
-                if(std::min({test_desync_attack(host, ip, port, is_https, ctx, store),
-                                test_desync_attack(host, ip, port, is_https, ctx, store),
-                                test_desync_attack(host, ip, port, is_https, ctx, store)}) == -1)
-                        std::cout << "\tFail. Attack don't work all times" << std::endl << std::endl;
-		else {
-			std::cout << "\tSuccess" << std::endl << std::endl;
-			show_configured_options(host, ip, port, is_https, ctx, store);
-			if(is_https)
-				SSL_CTX_free(ctx);
-			return 0;
-		}
-	}
+	if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
 
 	// Try RST, ACK attack
 	std::cout << "\tTrying RST, ACK attack..." << std::endl;
 	Profile.desync_zero_attack = DESYNC_ZERO_RSTACK;
-	if(test_desync_attack(host, ip, port, is_https, ctx, store) == -1)
-		std::cout << "\tFail" << std::endl << std::endl;
-	else {
-		// Check is attack works all times
-                if(std::min({test_desync_attack(host, ip, port, is_https, ctx, store),
-                                test_desync_attack(host, ip, port, is_https, ctx, store),
-                                test_desync_attack(host, ip, port, is_https, ctx, store)}) == -1)
-                        std::cout << "\tFail. Attack don't work all times" << std::endl << std::endl;
-		else {
-			std::cout << "\tSuccess" << std::endl << std::endl;
-			show_configured_options(host, ip, port, is_https, ctx, store);
-			if(is_https)
-				SSL_CTX_free(ctx);
-			return 0;
-		}
-	}
+	if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
 
 	for(unsigned short i = 1; i <= 2; i++) {
 		if(i == 2) {
@@ -626,88 +545,28 @@ int run_autoconf() {
 			std::cout << "\t(set low TCP window size)" << std::endl;
 		Profile.desync_first_attack = DESYNC_FIRST_SPLIT_FAKE;
 		Profile.desync_zero_attack = DESYNC_ZERO_FAKE;
-		if(test_desync_attack(host, ip, port, is_https, ctx, store) == -1)
-			std::cout << "\tFail" << std::endl << std::endl;
-		else {
-			// Check is attack works all times
-			if(std::min({test_desync_attack(host, ip, port, is_https, ctx, store),
-					test_desync_attack(host, ip, port, is_https, ctx, store),
-					test_desync_attack(host, ip, port, is_https, ctx, store)}) == -1)
-				std::cout << "\tFail. Attack don't work all times" << std::endl << std::endl;
-			else {
-				std::cout << "\tSuccess" << std::endl << std::endl;
-				show_configured_options(host, ip, port, is_https, ctx, store);
-				if(is_https)
-					 SSL_CTX_free(ctx);
-				return 0;
-			}
-		}
+		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
 
 		// Try fake packet attack + disorder(fake)
 		std::cout << "\tTrying fake packet + disorder(fake) attacks..." << std::endl;
 		if(i == 2)
 			std::cout << "\t(set low TCP window size)" << std::endl;
 		Profile.desync_first_attack = DESYNC_FIRST_DISORDER_FAKE;
-		if(test_desync_attack(host, ip, port, is_https, ctx, store) == -1)
-			std::cout << "\tFail" << std::endl << std::endl;
-		else {
-			// Check is attack works all times
-                        if(std::min({test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store)}) == -1)
-                                std::cout << "\tFail. Attack don't work all times" << std::endl << std::endl;
-			else {
-				std::cout << "\tSuccess" << std::endl << std::endl;
-				show_configured_options(host, ip, port, is_https, ctx, store);
-				if(is_https)
-					SSL_CTX_free(ctx);
-				return 0;
-			}
-		}
+		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
 
 		// Try RST attack + disorder(fake)
 		std::cout << "\tTrying RST packet + disorder(fake) attacks..." << std::endl;
 		if(i == 2)
 			std::cout << "\t(set low TCP window size)" << std::endl;
 		Profile.desync_zero_attack = DESYNC_ZERO_RST;
-		if(test_desync_attack(host, ip, port, is_https, ctx, store) == -1)
-			std::cout << "\tFail" << std::endl << std::endl;
-		else {
-			// Check is attack works all times
-                        if(std::min({test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store)}) == -1)
-                                std::cout << "\tFail. Attack don't work all times" << std::endl << std::endl;
-			else {
-				std::cout << "\tSuccess" << std::endl << std::endl;
-				show_configured_options(host, ip, port, is_https, ctx, store);
-				if(is_https)
-					SSL_CTX_free(ctx);
-				return 0;
-			}
-		}
+		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
 
 		// Try RST, ACK attack + disorder(fake)
 		std::cout << "\tTrying RST, ACK packet + disorder(fake) attacks..." << std::endl;
 		if(i == 2)
 			std::cout << "\t(set low TCP window size)" << std::endl;
 		Profile.desync_zero_attack = DESYNC_ZERO_RSTACK;
-		if(test_desync_attack(host, ip, port, is_https, ctx, store) == -1)
-			std::cout << "\tFail" << std::endl;
-		else {
-			// Check is attack works all times
-                        if(std::min({test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store),
-                                        test_desync_attack(host, ip, port, is_https, ctx, store)}) == -1)
-                                std::cout << "\tFail. Attack don't work all times" << std::endl << std::endl;
-			else {
-				std::cout << "\tSuccess" << std::endl << std::endl;
-				show_configured_options(host, ip, port, is_https, ctx, store);
-				if(is_https)
-					SSL_CTX_free(ctx);
-				return 0;
-			}
-		}
+		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
 
 		if(i == 2) {
 			Profile.window_size = 0;

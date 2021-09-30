@@ -122,7 +122,7 @@ void process_client_cycle(int client_socket) {
 	if(init_remote_server_socket(server_socket, server_ip, server_port) == -1) {
 		if(Profile.desync_attacks) {
 			// Stop sniff thread
-			flag = false;
+			flag.store(false);
 			if(sniff_thread.joinable()) sniff_thread.join();
 		}
 		send_string(client_socket, CONNECTION_ERROR_RESPONSE, CONNECTION_ERROR_RESPONSE.size());
@@ -138,7 +138,7 @@ void process_client_cycle(int client_socket) {
 				<< std::strerror(errno) << std::endl;
 		if(Profile.desync_attacks) {
 			// Stop sniff thread
-			flag = false;
+			flag.store(false);
 			if(sniff_thread.joinable()) sniff_thread.join();
 		}
 		send_string(client_socket, CONNECTION_ERROR_RESPONSE, CONNECTION_ERROR_RESPONSE.size());
@@ -154,7 +154,7 @@ void process_client_cycle(int client_socket) {
 		std::cerr << "Failed to get local port. Errno: " << std::strerror(errno) << std::endl;
 		if(Profile.desync_attacks) {
 			// Stop sniff thread
-			flag = false;
+			flag.store(false);
 			if(sniff_thread.joinable()) sniff_thread.join();
 		}
 		send_string(client_socket, CONNECTION_ERROR_RESPONSE, CONNECTION_ERROR_RESPONSE.size());

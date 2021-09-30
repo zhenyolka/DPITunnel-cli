@@ -17,6 +17,7 @@
 
 #include <RawSocket/CheckSum.h>
 
+extern struct Settings_perst_s Settings_perst;
 extern struct Profile_s Profile;
 
 const std::string FAKE_TLS_PACKET(
@@ -183,7 +184,7 @@ int sniff_handshake_packet(std::string * packet, std::string ip_srv,
 
 		// Check timeout
 		auto stop = std::chrono::high_resolution_clock::now();
-		if(std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count() > Profile.packet_capture_timeout) {
+		if(std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count() > Settings_perst.packet_capture_timeout) {
 			close(sockfd);
 			(*status).store(-1);
 			return -1;

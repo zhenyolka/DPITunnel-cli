@@ -38,8 +38,6 @@ struct Profile_s {
 	unsigned short fake_packets_ttl = 10;
 	unsigned short window_size = 0;
 	short window_scale_factor = -1;
-	unsigned short test_ssl_handshake_timeout = 5;
-	unsigned short packet_capture_timeout = 5000;
 
 	std::string doh_server = "https://dns.google/dns-query";
 
@@ -52,6 +50,9 @@ struct Profile_s {
 };
 
 struct Settings_perst_s {
+	unsigned short test_ssl_handshake_timeout = 5;
+	unsigned short packet_capture_timeout = 5000;
+	unsigned int count_hops_connect_timeout = 1000;
 	int server_port = 8080;
 	std::string server_address = "0.0.0.0";
 	std::string ca_bundle_path = "./ca.bundle";
