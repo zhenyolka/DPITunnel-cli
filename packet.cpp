@@ -79,11 +79,6 @@ int parse_request(const std::string & request, std::string & method, std::string
 		found_url = http_request["host"];
 	}
 
-	// Remove "www." if exists
-	size_t www = found_url.find("www.");
-	if(www != std::string::npos)
-		found_url.erase(www, 4);
-
 	// Check if port exists
 	size_t port_start_position = found_url.find(':');
 	if(port_start_position == std::string::npos) {
