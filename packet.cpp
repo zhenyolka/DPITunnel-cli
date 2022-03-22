@@ -7,12 +7,21 @@
 void parse_header(const std::string& line, std::map<std::string, std::string> & http_message) {
 	if(line.empty()) return;
 
-	size_t posFirst = line.find(':',0); //Look for separator ':'
+	size_t pos_sep = line.find(':',0); //Look for separator ':'
+	if (pos_sep == std::string::npos)
+		return;
 
-	std::string key = line.substr(0, posFirst);
+	std::string key = line.substr(0, pos_sep);
 	transform(key.begin(), key.end(), key.begin(),
 			  [](unsigned char c){ return std::tolower(c); });
-	std::string value = line.substr(line.at(posFirst + 1) == ' ' ? posFirst + 2 : posFirst + 1); // Skip ' ' after header
+
+	size_t value_start = line.find_first_not_of(' ', pos_sep + 1);
+	if (value_start == std::string::npos) // Skip ' ' after header
+		return;
+	size_t value_end = line.find_last_not_of(' '); // Skip ' ' after value
+	if (value_end == std::string::npos)
+		return;
+	std::string value = line.substr(value_start, value_end - value_start + 1);
 
 	http_message[key] = value;
 }
@@ -43,6 +52,8 @@ std::map<std::string, std::string> parse_http_message(std::string message) {
 									-1);
 	std::sregex_token_iterator end;
 	for ( bool is_first = true; iter != end; ++iter) {
+		if(std::string(*iter).empty())
+			break;
 		if(is_first) {
 			parse_first_line(*iter, http_message);
 			is_first = false;
