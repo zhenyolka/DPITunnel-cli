@@ -2,6 +2,7 @@
 #define DPITUNNEL_CLI_H
 
 #include <map>
+#include <set>
 #include <string>
 
 enum Desync_zero_attacks {
@@ -89,6 +90,10 @@ struct Settings_perst_s {
 
 	std::string ca_bundle_path = "./ca.bundle";
 	std::string ca_bundle;
+
+	std::string whitelist_path;
+	std::set<std::string> whitelist_domains;
+	std::set<std::string> whitelist_ips;
 
 	std::string pid_file;
 	bool daemon = false;

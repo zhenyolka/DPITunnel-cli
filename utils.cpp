@@ -8,9 +8,12 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include <math.h>
 #include <unistd.h>
+
+extern struct Settings_perst_s Settings_perst;
 
 bool wildcard_match(char const *needle, char const *haystack) {
 	for (; *needle != '\0'; ++needle) {
@@ -240,4 +243,42 @@ int tcp_get_auto_ttl(const uint8_t ttl, const uint8_t autottl1,
 	}
 
 	return ttl_of_fake_packet;
+}
+
+bool match_whitelist_domain(const std::string & domain) {
+	return Settings_perst.whitelist_domains.find(domain) != Settings_perst.whitelist_domains.end();
+}
+
+bool match_whitelist_ip(const std::string & ip) {
+    return Settings_perst.whitelist_ips.find(ip) != Settings_perst.whitelist_ips.end();
+}
+
+int load_whitelist() {
+	std::ifstream file;
+	file.open(Settings_perst.whitelist_path);
+	if(!file) {
+		std::cerr << "Failed to load whitelist. File "
+				  << Settings_perst.whitelist_path << " not found" << std::endl;
+		return -1;
+	}
+
+	std::string input;
+    size_t pos;
+    std::pair<std::string,std::string> entry;
+	while (std::getline(file, input)) {
+        pos = input.find(' ');
+        if (pos == std::string::npos)
+            continue;
+        entry = std::make_pair(
+                input.substr(0,pos),
+                input.substr(pos+1)
+        );
+        if (entry.first == "ip")
+            Settings_perst.whitelist_ips.insert(entry.second);
+        else if (entry.first == "domain")
+            Settings_perst.whitelist_domains.insert(entry.second);
+    }
+
+	file.close();
+	return 0;
 }

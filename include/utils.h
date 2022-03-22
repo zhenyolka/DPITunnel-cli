@@ -14,5 +14,8 @@ int ignore_sigpipe();
 int tcp_get_auto_ttl(const uint8_t ttl, const uint8_t autottl1,
                      const uint8_t autottl2, const uint8_t minhops,
                      const uint8_t maxttl);
+bool match_whitelist_domain(const std::string & domain);
+bool match_whitelist_ip(const std::string & ip);
+int load_whitelist();
 
 #endif //UTILS_H

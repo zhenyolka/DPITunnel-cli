@@ -48,6 +48,9 @@ const std::string HELP_PAGE(
 			"  --pid=<file>\t\t\t\t\twrite pid to file in daemon mode\n"
 			"  --ip=<ip>\t\t\t\t\tIP to bind the http proxy. Default: 0.0.0.0\n"
 			"  --port=<port>\t\t\t\t\tport to bind http proxy. Default: 8080\n"
+			"  --whitelist=<filename>\t\t\tdon't apply circumvention tricks to IPs and domains from supplied text file\n"
+            "  \t\t\t\t\t\teach line is entry that contains type (ip or domain) and after a space entry value\n"
+            "  \t\t\t\t\t\tExamples: \'ip 192.0.2.0\', \'domain example.com\'\n"
 			"  --mode=<mode>\t\t\t\t\tproxy mode. mode: proxy, transparent. Default: proxy\n"
 			"  --ca-bundle-path=<path>\t\t\tpath to CA certificates bundle in PEM format. Default: ./ca.bundle\n"
 			"  --daemon\t\t\t\t\tdaemonize program\n"
@@ -111,6 +114,7 @@ void process_client_cycle(int client_socket) {
 	std::string server_ip;
 	int server_port;
 	std::string server_method;
+	bool in_whitelist;
 	int res;
 	if((res = parse_request(buffer, server_method, server_host, server_port,
 							Settings_perst.proxy_mode == MODE_PROXY)) == -1) {
@@ -163,6 +167,8 @@ void process_client_cycle(int client_socket) {
 		return;
 	}
 
+    in_whitelist = match_whitelist_ip(server_ip) || match_whitelist_domain(server_host);
+
 	// If need get SYN, ACK packet sent by server during handshake
 	std::atomic<bool> flag(true);
 	std::atomic<int> local_port(-1);
@@ -170,7 +176,7 @@ void process_client_cycle(int client_socket) {
 	std::thread sniff_thread;
 	std::promise<void> sniff_thread_ready;
 	std::string sniffed_packet;
-	if(Profile.desync_attacks) {
+	if(Profile.desync_attacks && !in_whitelist) {
 		sniff_thread_ready = std::promise<void>();
 		sniff_thread = std::thread(sniff_handshake_packet, &sniffed_packet,
 					server_ip, server_port, &local_port, &flag, &status, &sniff_thread_ready);
@@ -181,7 +187,7 @@ void process_client_cycle(int client_socket) {
 	// Connect to remote server
 	int server_socket;
 	if(init_remote_server_socket(server_socket, server_ip, server_port) == -1) {
-		if(Profile.desync_attacks) {
+		if(Profile.desync_attacks && !in_whitelist) {
 			// Stop sniff thread
 			flag.store(false);
 			if(sniff_thread.joinable()) sniff_thread.join();
@@ -197,7 +203,7 @@ void process_client_cycle(int client_socket) {
 		|| setsockopt(server_socket, IPPROTO_TCP, TCP_NODELAY, (char *) &yes, sizeof(yes)) < 0) {
 		std::cerr << "Can't disable TCP Nagle's algorithm with setsockopt(). Errno: "
 				<< std::strerror(errno) << std::endl;
-		if(Profile.desync_attacks) {
+		if(Profile.desync_attacks && !in_whitelist) {
 			// Stop sniff thread
 			flag.store(false);
 			if(sniff_thread.joinable()) sniff_thread.join();
@@ -213,7 +219,7 @@ void process_client_cycle(int client_socket) {
 	socklen_t len = sizeof(local_addr);
 	if(getsockname(server_socket, (struct sockaddr *) &local_addr, &len) == -1) {
 		std::cerr << "Failed to get local port. Errno: " << std::strerror(errno) << std::endl;
-		if(Profile.desync_attacks) {
+		if(Profile.desync_attacks && !in_whitelist) {
 			// Stop sniff thread
 			flag.store(false);
 			if(sniff_thread.joinable()) sniff_thread.join();
@@ -232,7 +238,7 @@ void process_client_cycle(int client_socket) {
 			return;
 		}
 
-	if(Profile.desync_attacks) {
+	if(Profile.desync_attacks && !in_whitelist) {
 		// Get received SYN, ACK packet
 		if(sniff_thread.joinable()) sniff_thread.join();
 		if(status.load() == -1) {
@@ -444,6 +450,7 @@ int parse_cmdline(int argc, char* argv[]) {
 		{"auto-ttl", required_argument, 0, 0}, // id 21
 		{"wrong-seq", no_argument, 0, 0}, // id 22
 		{"mode", required_argument, 0, 0}, // id 23
+		{"whitelist", required_argument, 0, 0}, // id 24
 		{NULL, 0, NULL, 0}
 	};
 
@@ -667,6 +674,11 @@ int parse_cmdline(int argc, char* argv[]) {
 				}
 
 				break;
+
+			case 24: // whitelist
+				Settings_perst.whitelist_path = optarg;
+
+				break;
 		}
 	}
 
@@ -710,6 +722,9 @@ int main(int argc, char* argv[]) {
 		return -1; //exit_failure();
 	} else if(res == -2)
 		return 0;
+	if(!Settings_perst.whitelist_path.empty())
+		if(load_whitelist() == -1)
+			return -1;
 	ignore_sigpipe();
 
 	// Init interrupt pipe (used to interrupt poll() calls)
