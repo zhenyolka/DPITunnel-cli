@@ -168,10 +168,14 @@ void process_client_cycle(int client_socket) {
 	std::atomic<int> local_port(-1);
 	std::atomic<int> status;
 	std::thread sniff_thread;
+	std::promise<void> sniff_thread_ready;
 	std::string sniffed_packet;
 	if(Profile.desync_attacks) {
+		sniff_thread_ready = std::promise<void>();
 		sniff_thread = std::thread(sniff_handshake_packet, &sniffed_packet,
-					server_ip, server_port, &local_port, &flag, &status);
+					server_ip, server_port, &local_port, &flag, &status, &sniff_thread_ready);
+		// Wait for sniff thread to init
+		sniff_thread_ready.get_future().wait();
 	}
 
 	// Connect to remote server

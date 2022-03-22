@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <future>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -138,7 +139,8 @@ int sniff_ack_packet(std::string * packet, std::string ip_srv, int port_srv,
 }
 
 int sniff_handshake_packet(std::string * packet, std::string ip_srv,
-				int port_srv, std::atomic<int> * local_port_atom, std::atomic<bool> * flag, std::atomic<int> * status) {
+				int port_srv, std::atomic<int> * local_port_atom, std::atomic<bool> * flag, std::atomic<int> * status,
+				std::promise<void> * ready) {
 
 	if(packet == NULL || flag == NULL) return -1;
 	std::map<int, std::string> packets;
@@ -165,6 +167,9 @@ int sniff_handshake_packet(std::string * packet, std::string ip_srv,
 
 	int local_port = (*local_port_atom).load();
 	bool is_searched = false;
+
+	// Sniff thread ready
+	(*ready).set_value();
 
 	// Handle timeout
 	auto start = std::chrono::high_resolution_clock::now();

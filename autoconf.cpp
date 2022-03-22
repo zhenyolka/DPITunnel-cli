@@ -255,10 +255,13 @@ int test_desync_attack(std::string host, std::string ip, int port, bool is_https
         std::atomic<bool> flag(true);
 	std::atomic<int> local_port(-1);
 	std::atomic<int> status;
-        std::thread sniff_thread;
-        std::string sniffed_packet;
-        sniff_thread = std::thread(sniff_handshake_packet, &sniffed_packet,
-					ip, port, &local_port, &flag, &status);
+	std::thread sniff_thread;
+	std::promise<void> sniff_thread_ready = std::promise<void>();
+    std::string sniffed_packet;
+    sniff_thread = std::thread(sniff_handshake_packet, &sniffed_packet,
+							   ip, port, &local_port, &flag, &status, &sniff_thread_ready);
+	// Wait for sniff thread to init
+	sniff_thread_ready.get_future().wait();
 	auto start = std::chrono::high_resolution_clock::now();
         if(init_remote_server_socket(socket, ip, port) == -1) {
                 std::cout << "Resource blocked by IP. I can't help. Use VPN or proxy :((" << std::endl;

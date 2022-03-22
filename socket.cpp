@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <cstring>
 #include <chrono>
+#include <future>
 #include <string>
 #include <fcntl.h>
 #include <poll.h>
@@ -91,8 +92,11 @@ short count_hops_private(struct sockaddr_in server_address, std::string ip, int 
 	std::atomic<int> local_port(-1);
 	std::atomic<int> status;
 	std::string sniffed_packet;
+	std::promise<void> sniff_thread_ready = std::promise<void>();
 	std::thread sniff_thread = std::thread(sniff_handshake_packet, &sniffed_packet,
-		ip, port, &local_port, &flag, &status);
+		ip, port, &local_port, &flag, &status, &sniff_thread_ready);
+	// Wait for sniff thread to init
+	sniff_thread_ready.get_future().wait();
 
 	// Connect to remote server
 	auto start = std::chrono::high_resolution_clock::now();
