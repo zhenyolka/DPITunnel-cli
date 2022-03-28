@@ -175,7 +175,7 @@ short count_hops_private(struct sockaddr_in server_address, std::string ip, int 
 	for(short ttl = 1; ttl <= 255; ttl++) {
 		std::string payload_packet = form_packet(sniffed_packet, null_byte.c_str(), null_byte.size(),
 						rand() % 65535, ttl, 0, 1, window_size, true);
-		if(sendto(sockfd, &payload_packet[0], payload_packet.size(), 0, (const sockaddr*) &server_address, sizeof(sockaddr)) < 0) {
+		if(sendto(sockfd, &payload_packet[0], payload_packet.size(), MSG_NOSIGNAL, (const sockaddr*) &server_address, sizeof(sockaddr)) < 0) {
 			std::cerr << "Failed to send packet from raw socket. Errno: "
 				<< std::strerror(errno) << std::endl;
 			break;
@@ -377,10 +377,10 @@ int send_string(int socket, const std::string & string_to_send, unsigned int las
 	while(last_char - offset != 0) {
 		ssize_t send_size;
 		if(split_position == 0)
-			send_size = send(socket, string_to_send.c_str() + offset, last_char - offset, 0);
+			send_size = send(socket, string_to_send.c_str() + offset, last_char - offset, MSG_NOSIGNAL);
 		else
 			send_size = send(socket, string_to_send.c_str() + offset,
-					last_char - offset < split_position ? last_char - offset < split_position : split_position, 0);
+					last_char - offset < split_position ? last_char - offset < split_position : split_position, MSG_NOSIGNAL);
 
 		if(send_size < 0) {
 			if(errno == EINTR)      continue; // All is good. It is just interrrupt.
@@ -407,7 +407,7 @@ int send_string_raw(int socket, const std::string & string_to_send,
 	if(last_char == 0)
 		return 0;
 
-	if(sendto(socket, &string_to_send[0], last_char, 0, serv_addr, serv_addr_size) < 0) {
+	if(sendto(socket, &string_to_send[0], last_char, MSG_NOSIGNAL, serv_addr, serv_addr_size) < 0) {
 		std::cerr << "Failed to send packet from raw socket. Errno: "
 			<< std::strerror(errno) << std::endl;
 		return -1;
