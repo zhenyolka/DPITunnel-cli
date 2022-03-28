@@ -250,7 +250,7 @@ void process_client_cycle(int client_socket) {
 		}
 		// Get first client packet
 		if(is_https && Settings_perst.proxy_mode == MODE_PROXY) {
-				if(recv_string(client_socket, buffer, last_char, &timeout_recv) == -1) {
+				if(recv_string(client_socket, buffer, last_char, &timeout_recv) == -1 || last_char == 0) {
 					close(server_socket);
 					close(client_socket);
 					return;
@@ -258,6 +258,15 @@ void process_client_cycle(int client_socket) {
 		}
 		do_desync_attack(server_socket, server_ip, server_port, local_port,
 					is_https, sniffed_packet, buffer, last_char);
+
+  // Send packet to synchronize SEQ/ACK
+  std::string data_empty(last_char, '\x00');
+	 if(send_string(server_socket, data_empty, last_char) == -1) {
+				send_string(client_socket, CONNECTION_ERROR_RESPONSE, CONNECTION_ERROR_RESPONSE.size());
+			 close(server_socket);
+			 close(client_socket);
+    return;
+	 }
 	// Send packet we received previously if it's http connection
 	} else if(!is_https || Settings_perst.proxy_mode == MODE_TRANSPARENT) {
 		if(send_string(server_socket, buffer, last_char) == -1) {
@@ -270,7 +279,7 @@ void process_client_cycle(int client_socket) {
 
 	// Make sockets non-blocking
         if(fcntl(client_socket, F_SETFL, fcntl(client_socket, F_GETFL, 0) | O_NONBLOCK) == -1 ||
-		fcntl(server_socket, F_SETFL, fcntl(client_socket, F_GETFL, 0) | O_NONBLOCK) == -1) {
+		fcntl(server_socket, F_SETFL, fcntl(server_socket, F_GETFL, 0) | O_NONBLOCK) == -1) {
                 std::cerr << "Failed to make sockets non-blocking. Errno: " << std::strerror(errno) << std::endl;
         }
 

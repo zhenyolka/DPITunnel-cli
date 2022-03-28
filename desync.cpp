@@ -394,33 +394,6 @@ int do_desync_attack(int socket_srv, const std::string & ip_srv, int port_srv, i
 	} else if(Profile.min_ttl) {
 		if(tcp_get_auto_ttl(srv_pack_ip_h->ttl, 0, 0, Profile.min_ttl, 0)) {
 			// DON'T send fakes
-			// Set low TTL to make socket_srv not to send packet but to increase sequence number
-			if(set_ttl(socket_srv, 1) == 1) {
-				close(sockfd);
-				return -1;
-			}
-
-			// Send packets from regular socket
-			if(send_string(socket_srv, data_empty, last_char) == -1) {
-				close(sockfd);
-				return -1;
-			}
-
-			// Reply ACK packet to regular socket
-			flags = TH_ACK;
-			packet_mod = form_packet(packet_raw, NULL, 0, rand() % 65535,
-									 1, 1, last_char, window_size, false, &flags);
-			if(send_string_raw(sockfd, packet_mod, packet_mod.size(),
-							   (struct sockaddr*) &local_addr, sizeof(local_addr)) == -1) {
-				close(sockfd);
-				return -1;
-			}
-
-			// Restore TTL
-			if(set_ttl(socket_srv, default_ttl) == 1) {
-				close(sockfd);
-				return -1;
-			}
 
 			// Send data packet
 			packet_mod = form_packet(packet_raw, packet_data.c_str(), last_char,
@@ -488,42 +461,6 @@ int do_desync_attack(int socket_srv, const std::string & ip_srv, int port_srv, i
 	switch(Profile.desync_first_attack) {
 		case DESYNC_FIRST_DISORDER:
 		case DESYNC_FIRST_DISORDER_FAKE:
-			// Set low TTL to make socket_srv not to send packet but to increase sequence number
-			if(set_ttl(socket_srv, 1) == 1) {
-				close(sockfd);
-				return -1;
-			}
-
-			// Send packets from regular socket
-                        if(send_string(socket_srv, data_empty, split_pos) == -1 ||
-                                send_string(socket_srv, data_empty, last_char - split_pos) == -1) {
-                                close(sockfd);
-                                return -1;
-                        }
-
-			// Reply ACK packet to regular socket
-			flags = TH_ACK;
-			packet_mod = form_packet(packet_raw, NULL, 0, rand() % 65535,
-							1, 1, split_pos, window_size, false, &flags);
-			if(send_string_raw(sockfd, packet_mod, packet_mod.size(),
-						(struct sockaddr*) &local_addr, sizeof(local_addr)) == -1) {
-				close(sockfd);
-				return -1;
-			}
-
-			packet_mod = form_packet(packet_raw, NULL, 0, rand() % 65535,
-							1, 1, last_char, window_size, false, &flags);
-			if(send_string_raw(sockfd, packet_mod, packet_mod.size(),
-						(struct sockaddr*) &local_addr, sizeof(local_addr)) == -1) {
-				close(sockfd);
-				return -1;
-			}
-
-			// Restore TTL
-                        if(set_ttl(socket_srv, default_ttl) == 1) {
-                                close(sockfd);
-                                return -1;
-                        }
 
 			// Send second data packet(out-of-order)
 			packet_mod = form_packet(packet_raw, packet_data.c_str() + split_pos, last_char - split_pos,
@@ -569,42 +506,6 @@ int do_desync_attack(int socket_srv, const std::string & ip_srv, int port_srv, i
 
 		case DESYNC_FIRST_SPLIT:
 		case DESYNC_FIRST_SPLIT_FAKE:
-			// Set low TTL to make socket_srv not to send packet but to increase sequence number
-			if(set_ttl(socket_srv, 1) == 1) {
-				close(sockfd);
-				return -1;
-			}
-
-			// Send packets from regular socket
-                        if(send_string(socket_srv, data_empty, split_pos) == -1 ||
-                                send_string(socket_srv, data_empty, last_char - split_pos) == -1) {
-                                close(sockfd);
-                                return -1;
-                        }
-
-                        // Reply ACK packet to regular socket
-                        flags = TH_ACK;
-                        packet_mod = form_packet(packet_raw, NULL, 0, rand() % 65535,
-                                                        1, 1, split_pos, window_size, false, &flags);
-                        if(send_string_raw(sockfd, packet_mod, packet_mod.size(),
-                                                (struct sockaddr*) &local_addr, sizeof(local_addr)) == -1) {
-                                close(sockfd);
-                                return -1;
-                        }
-
-                        packet_mod = form_packet(packet_raw, NULL, 0, rand() % 65535,
-                                                        1, 1, last_char, window_size, false, &flags);
-                        if(send_string_raw(sockfd, packet_mod, packet_mod.size(),
-                                                (struct sockaddr*) &local_addr, sizeof(local_addr)) == -1) {
-                                close(sockfd);
-                                return -1;
-                        }
-
-                        // Restore TTL
-                        if(set_ttl(socket_srv, default_ttl) == 1) {
-                                close(sockfd);
-                                return -1;
-                        }
 
 			// Send first fake packet
 			if(Profile.desync_first_attack == DESYNC_FIRST_SPLIT_FAKE) {
@@ -650,34 +551,6 @@ int do_desync_attack(int socket_srv, const std::string & ip_srv, int port_srv, i
 
 		case DESYNC_FIRST_NONE:
 			// Just send packet without bypass techniques
-			// Set low TTL to make socket_srv not to send packet but to increase sequence number
-                        if(set_ttl(socket_srv, 1) == 1) {
-                                close(sockfd);
-                                return -1;
-                        }
-
-                        // Send packets from regular socket
-                        if(send_string(socket_srv, data_empty, last_char) == -1) {
-                                close(sockfd);
-                                return -1;
-                        }
-
-			// Reply ACK packet to regular socket
-                        flags = TH_ACK;
-			packet_mod = form_packet(packet_raw, NULL, 0, rand() % 65535,
-                                                        1, 1, last_char, window_size, false, &flags);
-                        if(send_string_raw(sockfd, packet_mod, packet_mod.size(),
-                                                (struct sockaddr*) &local_addr, sizeof(local_addr)) == -1) {
-                                close(sockfd);
-                                return -1;
-                        }
-
-			// Restore TTL
-                        if(set_ttl(socket_srv, default_ttl) == 1) {
-                                close(sockfd);
-                                return -1;
-                        }
-
 			// Send data packet
 			packet_mod = form_packet(packet_raw, packet_data.c_str(), last_char,
                                                                 rand() % 65535, default_ttl, 0, 1,
