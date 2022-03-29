@@ -3,6 +3,6 @@
 
 #include <string>
 
-int resolve_host(const std::string & host, std::string & ip);
+int resolve_host(const std::string &host, std::string &ip);
 
 #endif //DNS_H
