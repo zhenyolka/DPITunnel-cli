@@ -116,7 +116,7 @@ int check_https_response(int socket, std::string host, std::string ip, int port,
                         return -1;
                     }
                 } else {
-                    if (send_string(socket, data_empty, res) == -1 ||
+                    if (send_string(socket, data_empty, split_pos) == -1 ||
                         send_string(socket, data_empty, res - split_pos) == -1) {
                         SSL_free(ssl);
                         close(socket);
