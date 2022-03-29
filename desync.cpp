@@ -308,7 +308,7 @@ int set_ttl(int socket, int ttl) {
 }
 
 int do_desync_attack(int socket_srv, const std::string & ip_srv, int port_srv, int port_local, bool is_https,
-			const std::string & packet_raw, const std::string & packet_data, unsigned int last_char) {
+			const std::string & packet_raw, const std::string & packet_data, unsigned int last_char, unsigned int split_pos) {
 
 	// Map IP header of server SYN, ACK packet
 	iphdr* srv_pack_ip_h = (iphdr*) &packet_raw[0];
@@ -369,19 +369,6 @@ int do_desync_attack(int socket_srv, const std::string & ip_srv, int port_srv, i
 	local_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 	local_addr.sin_port = htons(port_local);
 	memset(local_addr.sin_zero, '\0', sizeof(local_addr.sin_zero));
-
-	// Split packet at the middle of SNI or at user specified position
-	unsigned int sni_start, sni_len;
-	unsigned int split_pos;
-	// If it's https connection
-	if(is_https && Profile.split_at_sni) {
-		get_tls_sni(packet_data, last_char, sni_start, sni_len);
-		if(sni_start + sni_len > last_char || sni_start == 0 || sni_len == 0)
-			split_pos = Profile.split_position;
-		else
-			split_pos = sni_start + sni_len / 2;
-	} else
-		split_pos = std::min(Profile.split_position, last_char);
 
 	uint8_t fake_ttl = Profile.fake_packets_ttl != 0 ? Profile.fake_packets_ttl : default_ttl;
 	std::string packet_fake;

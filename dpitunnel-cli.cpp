@@ -256,17 +256,40 @@ void process_client_cycle(int client_socket) {
 					return;
 				}
 		}
+		// Split packet at the middle of SNI or at user specified position
+		unsigned int sni_start, sni_len;
+		unsigned int split_pos;
+		// If it's https connection
+		if(is_https && Profile.split_at_sni) {
+			get_tls_sni(buffer, last_char, sni_start, sni_len);
+			if(sni_start + sni_len > last_char || sni_start == 0 || sni_len == 0)
+				split_pos = Profile.split_position;
+			else
+				split_pos = sni_start + sni_len / 2;
+		} else
+			split_pos = std::min(Profile.split_position, last_char);
+
 		do_desync_attack(server_socket, server_ip, server_port, local_port,
-					is_https, sniffed_packet, buffer, last_char);
+					is_https, sniffed_packet, buffer, last_char, split_pos);
 
   // Send packet to synchronize SEQ/ACK
   std::string data_empty(last_char, '\x00');
-	 if(send_string(server_socket, data_empty, last_char) == -1) {
-				send_string(client_socket, CONNECTION_ERROR_RESPONSE, CONNECTION_ERROR_RESPONSE.size());
-			 close(server_socket);
-			 close(client_socket);
-    return;
-	 }
+  if(Profile.desync_first_attack == DESYNC_FIRST_NONE) {
+	  if(send_string(server_socket, data_empty, last_char) == -1) {
+		  send_string(client_socket, CONNECTION_ERROR_RESPONSE, CONNECTION_ERROR_RESPONSE.size());
+		  close(server_socket);
+		  close(client_socket);
+		  return;
+	  }
+  } else {
+	  if(send_string(server_socket, data_empty, split_pos) == -1 ||
+	  send_string(server_socket, data_empty, last_char - split_pos) == -1) {
+		  send_string(client_socket, CONNECTION_ERROR_RESPONSE, CONNECTION_ERROR_RESPONSE.size());
+		  close(server_socket);
+		  close(client_socket);
+		  return;
+	  }
+  }
 	// Send packet we received previously if it's http connection
 	} else if(!is_https || Settings_perst.proxy_mode == MODE_TRANSPARENT) {
 		if(send_string(server_socket, buffer, last_char) == -1) {

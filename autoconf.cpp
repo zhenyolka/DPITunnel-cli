@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <vector>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
@@ -83,67 +84,80 @@ int check_https_response(int socket, std::string host, std::string ip, int port,
         bool is_failure = false;
         std::string buffer(Profile.buffer_size, ' ');
         auto start = std::chrono::high_resolution_clock::now();
-        while ((res = SSL_do_handshake(ssl)) != 1) {
-                auto err = SSL_get_error(ssl, res);
-		switch (err) {
-                        case SSL_ERROR_WANT_READ:
-                                // Transfer from openssl to server
-                                res = BIO_read(wbio, &buffer[0], buffer.size());
-                                if(res > 0) {
-                                        if(is_first_time) {
-                                                if(do_desync_attack(socket, ip, port, local_port,
-                                                                        true, sniffed_packet,
-                                                                        buffer, res) == -1)
-                                                        is_failure = true;
-                                                is_first_time = false;
-                                        } else {
-                                                if(send_string(socket, buffer, res) == -1)
-                                                        is_failure = true;
-                                        }
-                                } else if(!BIO_should_retry(wbio))
-                                        is_failure = true;
-
-                                if(is_failure) {
-                                        SSL_free(ssl);
-                                        close(socket);
-                                        return -1;
-                                }
-
-				// Transfer from server to openssl
-                                if(recv_string(socket, buffer, last_char) == -1) {
-                                        SSL_free(ssl);
-                                        close(socket);
-                                        return -1;
-                                }
-                                offset = 0;
-                                while(last_char - offset != 0) {
-                                        res = BIO_write(rbio, &buffer[0] + offset, last_char);
-                                        if(res <= 0) {
-                                                std::cerr << "BIO write failure" << std::endl;
-                                                SSL_free(ssl);
-                                                close(socket);
-                                                return -1;
-                                        }
-                                        offset += res;
-                                }
-
-                                break;
-                        default:
-                                std::cout << "SSL handshake failed" << std::endl;
-                                SSL_free(ssl);
-                                close(socket);
-                                return -1;
-                }
-
+	while (SSL_do_handshake(ssl) == -1) {
+		res = BIO_read(wbio, &buffer[0], buffer.size());
+		if (res > 0) {
+			if(is_first_time) {
+				// Split packet at the middle of SNI or at user specified position
+				unsigned int sni_start, sni_len;
+				unsigned int split_pos;
+				// If it's https connection
+				if(Profile.split_at_sni) {
+					get_tls_sni(buffer, res, sni_start, sni_len);
+					if(sni_start + sni_len > res || sni_start == 0 || sni_len == 0)
+						split_pos = Profile.split_position;
+					else
+						split_pos = sni_start + sni_len / 2;
+				} else
+					split_pos = std::min((int) Profile.split_position, res);
+				if(do_desync_attack(socket, ip, port, local_port,
+									true, sniffed_packet,
+									buffer, res, split_pos) == -1) {
+					SSL_free(ssl);
+					close(socket);
+					return -1;
+				}
+				// Send packet to synchronize SEQ/ACK
+				std::string data_empty(res, '\x00');
+				if(Profile.desync_first_attack == DESYNC_FIRST_NONE) {
+					if(send_string(socket, data_empty, res) == -1) {
+						SSL_free(ssl);
+						close(socket);
+						return -1;
+					}
+				} else {
+					if(send_string(socket, data_empty, res) == -1 ||
+					   send_string(socket, data_empty, res - split_pos) == -1) {
+						SSL_free(ssl);
+						close(socket);
+						return -1;
+					}
+				}
+				is_first_time = false;
+			} else {
+				if(send_string(socket, buffer, res) == -1) {
+					SSL_free(ssl);
+					close(socket);
+					return -1;
+				}
+			}
+		} else {
+			if(recv_string(socket, buffer, last_char) == -1) {
+				SSL_free(ssl);
+				close(socket);
+				return -1;
+			}
+			offset = 0;
+			while(last_char - offset != 0) {
+				res = BIO_write(rbio, &buffer[0] + offset, last_char);
+				if(res <= 0) {
+					std::cerr << "BIO write failure" << std::endl;
+					SSL_free(ssl);
+					close(socket);
+					return -1;
+				}
+				offset += res;
+			}
+		}
 		// Check timeout
-                auto stop = std::chrono::high_resolution_clock::now();
-                if(std::chrono::duration_cast<std::chrono::seconds>(stop - start).count() > Settings_perst.test_ssl_handshake_timeout) {
-                        std::cout << "SSL handshake timeout" << std::endl;
-                        SSL_free(ssl);
-                        close(socket);
-                        return -1;
-                }
-        }
+		auto stop = std::chrono::high_resolution_clock::now();
+		if(std::chrono::duration_cast<std::chrono::seconds>(stop - start).count() > Settings_perst.test_ssl_handshake_timeout) {
+			std::cout << "SSL handshake timeout" << std::endl;
+			SSL_free(ssl);
+			close(socket);
+			return -1;
+		}
+	}
 
 	// Verify certificate
         if(SSL_get_verify_result(ssl) != X509_V_OK) {
@@ -191,8 +205,9 @@ int check_http_response(int socket, std::string host, std::string ip, int port, 
 		   "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*" "/" "*;q=0.8\r\n"
 		   "Accept-Encoding: gzip, deflate\r\n\r\n";
 
+	unsigned int split_pos = std::min(Profile.split_position, (unsigned int) request.size());
 	if(do_desync_attack(socket, ip, port, local_port,
-				true, sniffed_packet, request, request.size()) == -1) {
+				true, sniffed_packet, request, request.size(), split_pos) == -1) {
 		close(socket);
 		return -1;
 	}
@@ -314,9 +329,7 @@ int test_desync_attack(std::string host, std::string ip, int port, bool is_https
 
 void show_configured_options(std::string host, std::string ip, int port, bool is_https, SSL_CTX *ctx, X509_STORE *store) {
 	// Find minimum working ttl for fake packets
-	bool display_ttl = false;
-	if(Profile.desync_zero_attack != DESYNC_ZERO_NONE ||
-		Profile.desync_first_attack == DESYNC_FIRST_DISORDER_FAKE || Profile.desync_first_attack == DESYNC_FIRST_SPLIT_FAKE) {
+	if(Profile.fake_packets_ttl) {
 		std::cout << "Calculating minimum working ttl..." << std::endl;
 		short result = -1;
 		int fake_packets_ttl = Profile.fake_packets_ttl;
@@ -331,7 +344,6 @@ void show_configured_options(std::string host, std::string ip, int port, bool is
 		}
 		Profile.fake_packets_ttl--;
 		std::cout << std::endl;
-		display_ttl = true;
 	}
 	std::cout << "Configuration successful! Apply these options when run program:" << std::endl;
 	if(Profile.builtin_dns) {
@@ -341,13 +353,16 @@ void show_configured_options(std::string host, std::string ip, int port, bool is
 	}
 	std::cout << "-doh ";
 	std::cout << "-doh-server " << Profile.doh_server << ' ';
-	std::cout << "-split-at-sni ";
+    if(Profile.split_at_sni)
+        std::cout << "-split-at-sni ";
 	if(Profile.window_size != 0)
 		std::cout << "-wsize " << Profile.window_size << ' ';
 	if(Profile.window_scale_factor != -1)
 		std::cout << "-wsfactor " << Profile.window_scale_factor << ' ';
-	if(display_ttl)
+	if(Profile.fake_packets_ttl)
 		std::cout << "-ttl " << Profile.fake_packets_ttl << ' ';
+	if(Profile.wrong_seq)
+		std::cout << "-wrong-seq ";
 	if(is_https)
 		std::cout << "-ca-bundle-path \"" << Settings_perst.ca_bundle_path << "\" ";
 	if(Profile.desync_zero_attack != DESYNC_ZERO_NONE || Profile.desync_first_attack != DESYNC_FIRST_NONE)
@@ -384,18 +399,39 @@ int test_desync_attack_wrapper(std::string host, std::string ip, int port, bool 
 	return -1;
 }
 
+void set_profile(const std::string & doh_server, bool builtin_dns, Desync_zero_attacks zero_attack, Desync_first_attacks first_attack,
+					  const std::string & fake_type, short ttl, bool win_size_scale) {
+	Profile_s default_profile;
+	default_profile.doh = true;
+	default_profile.doh_server = doh_server;
+	if (builtin_dns)
+		default_profile.builtin_dns = true;
+	default_profile.desync_zero_attack = zero_attack;
+	default_profile.desync_first_attack = first_attack;
+	if (fake_type == "ttl")
+		default_profile.fake_packets_ttl = ttl;
+	else if (fake_type == "wrong-seq")
+		default_profile.wrong_seq = true;
+	if (win_size_scale) {
+		default_profile.window_size = 1;
+		default_profile.window_scale_factor = 6;
+	}
+	Profile = default_profile;
+}
+
 int run_autoconf() {
 	bool is_https;
 	int port;
 	std::string host;
 	std::string tmp;
+	std::string doh_server = Profile.doh_server;
 	std::cout << "Site domain you want to unblock " << std::endl
 		<< "(http://example.com or https://example.com or example.com. Can contain port): ";
 	std::getline(std::cin, host);
-	std::cout << "DoH server (press enter to use default " << Profile.doh_server << "): ";
+	std::cout << "DoH server (press enter to use default " << doh_server << "): ";
 	std::getline(std::cin, tmp);
 	if(!tmp.empty())
-		Profile.doh_server = tmp;
+		doh_server = tmp;
 
 	if(host.rfind("http://", 0) == 0) {
 		is_https = false;
@@ -451,14 +487,15 @@ int run_autoconf() {
 	}
 
 	// Resolve over DoH
-	std::cout << "Resolving host over DoH server " << Profile.doh_server << std::endl;
+	std::cout << "Resolving host over DoH server " << doh_server << std::endl;
 	Profile.doh = true;
 	std::string ip;
+	bool builtin_dns = false;
 	if(resolve_host(host, ip) == -1) {
 		// Try with builtin DNS
 		std::cout << "DNS server (press enter to use default " << Profile.builtin_dns_ip << ". Can contain port): ";
 		std::getline(std::cin, tmp);
-		Profile.builtin_dns = true;
+		Profile.builtin_dns = builtin_dns = true;
 		if(!tmp.empty()) {
 			// Check if port exists
 			size_t port_start_position = tmp.find(':');
@@ -477,125 +514,34 @@ int run_autoconf() {
 	}
 	std::cout << host << " IP is " << ip << std::endl << std::endl;
 
-	// One time just attack, second time with low tcp window size
-	for(unsigned short i = 1; i <= 2; i++) {
-		if(i == 2) {
-			Profile.window_size = 1;
-			Profile.window_scale_factor = 6;
-		}
-		// Try split attack
-		std::cout << "\tTrying split attack..." << std::endl;
-		if(i == 2)
-			std::cout << "\t(set low TCP window size)" << std::endl;
-		Profile.desync_attacks = true;
-		Profile.split_at_sni = true;
-		Profile.desync_first_attack = DESYNC_FIRST_SPLIT;
-		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
-
-		// Try disorder attack
-		std::cout << "\tTrying disorder attack..." << std::endl;
-		if(i == 2)
-			std::cout << "\t(set low TCP window size)" << std::endl;
-		Profile.desync_first_attack = DESYNC_FIRST_DISORDER;
-		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
-		
-		if(i == 2) {
-			Profile.window_size = 0;
-			Profile.window_scale_factor = -1;
-		}
-	}
-
 	std::cout << "\tCalculating network distance to server..." << std::endl;
-	short hops = count_hops(ip, port);
-	if(hops == -1) {
+	short fakes_ttl = count_hops(ip, port);
+	if(fakes_ttl == -1) {
 		std::cout << "\tFail" << std::endl;
 		if(is_https)
 			SSL_CTX_free(ctx);
 		return -1;
 	}
-	Profile.fake_packets_ttl = hops - 1;
-	std::cout << "\tHops to site: " << Profile.fake_packets_ttl + 1 << std::endl << std::endl;
+	std::cout << "\tHops to site: " << fakes_ttl << std::endl << std::endl;
+	fakes_ttl--;
 
-	for(unsigned short i = 1; i <= 2; i++) {
-		if(i == 2) {
-			Profile.window_size = 1;
-			Profile.window_scale_factor = 6;
-		}
-		// Try disorder fake attack
-		std::cout << "\tTrying disorder(fake) attack..." << std::endl;
-		if(i == 2)
-			std::cout << "\t(set low TCP window size)" << std::endl;
-		Profile.desync_first_attack = DESYNC_FIRST_DISORDER_FAKE;
-		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
-
-		// Try split fake attack
-		std::cout << "\tTrying split(fake) attack..." << std::endl;
-		if(i == 2)
-			std::cout << "\t(set low TCP window size)" << std::endl;
-		Profile.desync_first_attack = DESYNC_FIRST_SPLIT_FAKE;
-		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
-
-		if(i == 2) {
-			Profile.window_size = 0;
-			Profile.window_scale_factor = -1;
-		}
-	}
-
-	// Try fake packet attack
-	std::cout << "\tTrying fake packet attack..." << std::endl;
-	Profile.desync_first_attack = DESYNC_FIRST_NONE;
-	Profile.desync_zero_attack = DESYNC_ZERO_FAKE;
-	if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
-
-	// Try RST attack
-	std::cout << "\tTrying RST attack..." << std::endl;
-	Profile.desync_zero_attack = DESYNC_ZERO_RST;
-	if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
-
-	// Try RST, ACK attack
-	std::cout << "\tTrying RST, ACK attack..." << std::endl;
-	Profile.desync_zero_attack = DESYNC_ZERO_RSTACK;
-	if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
-
-	for(unsigned short i = 1; i <= 2; i++) {
-		if(i == 2) {
-			Profile.window_size = 1;
-			Profile.window_scale_factor = 6;
-		}
-		// Try fake packet attack + split(fake)
-		std::cout << "\tTrying fake packet + split(fake) attacks..." << std::endl;
-		if(i == 2)
-			std::cout << "\t(set low TCP window size)" << std::endl;
-		Profile.desync_first_attack = DESYNC_FIRST_SPLIT_FAKE;
-		Profile.desync_zero_attack = DESYNC_ZERO_FAKE;
-		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
-
-		// Try fake packet attack + disorder(fake)
-		std::cout << "\tTrying fake packet + disorder(fake) attacks..." << std::endl;
-		if(i == 2)
-			std::cout << "\t(set low TCP window size)" << std::endl;
-		Profile.desync_first_attack = DESYNC_FIRST_DISORDER_FAKE;
-		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
-
-		// Try RST attack + disorder(fake)
-		std::cout << "\tTrying RST packet + disorder(fake) attacks..." << std::endl;
-		if(i == 2)
-			std::cout << "\t(set low TCP window size)" << std::endl;
-		Profile.desync_zero_attack = DESYNC_ZERO_RST;
-		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
-
-		// Try RST, ACK attack + disorder(fake)
-		std::cout << "\tTrying RST, ACK packet + disorder(fake) attacks..." << std::endl;
-		if(i == 2)
-			std::cout << "\t(set low TCP window size)" << std::endl;
-		Profile.desync_zero_attack = DESYNC_ZERO_RSTACK;
-		if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
-
-		if(i == 2) {
-			Profile.window_size = 0;
-			Profile.window_scale_factor = -1;
-		}
-	}
+	// Iterate through all combinations
+	const std::vector<Desync_zero_attacks> zero_attacks = {DESYNC_ZERO_NONE, DESYNC_ZERO_FAKE, DESYNC_ZERO_RST, DESYNC_ZERO_RSTACK};
+	const std::vector<Desync_first_attacks> first_attacks = {DESYNC_FIRST_DISORDER_FAKE, DESYNC_FIRST_SPLIT_FAKE};
+	const std::vector<std::string> fake_types = {"ttl", "wrong-seq"};
+	const std::vector<bool> win_size_scales = {false, true};
+	unsigned int comb_all = zero_attacks.size() * first_attacks.size() * fake_types.size() * win_size_scales.size();
+	unsigned int comb_curr = 1;
+	for(const Desync_zero_attacks & zero_attack : zero_attacks)
+		for(const Desync_first_attacks & first_attack : first_attacks)
+			for(const std::string & fake_type : fake_types)
+				for(const bool win_size_scale : win_size_scales) {
+					std::cout << "\tTrying " << comb_curr << '/' << comb_all << "..." << std::endl;
+					set_profile(doh_server, builtin_dns, zero_attack, first_attack, fake_type, fakes_ttl, win_size_scale);
+					if(test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) == 0) return 0;
+					comb_curr++;
+				}
+	std::cout << "Failed to find any working attack!" << std::endl;
 
 	if(is_https)
 		SSL_CTX_free(ctx);

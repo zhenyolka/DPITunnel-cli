@@ -13,6 +13,6 @@ std::string form_packet(std::string packet_raw, const char * packet_data, unsign
                                 unsigned short ttl, unsigned int seq, unsigned int ack_seq,
                                 unsigned int window_size, bool is_swap_addr, uint8_t * flags = NULL);
 int do_desync_attack(int socket_srv, const std::string & ip_srv, int port_srv, int port_local, bool is_https,
-				const std::string & packet_raw, const std::string & packet_data, unsigned int last_char);
+				const std::string & packet_raw, const std::string & packet_data, unsigned int last_char, unsigned int split_pos);
 
 #endif //DESYNC_H
