@@ -226,10 +226,14 @@ int resolve_host_over_doh(const std::string &host, std::string &ip) {
         serv_host.erase(0, 8);
     // Properly process test.com and test.com/dns-query urls
     if (serv_host.back() == '/') serv_host.pop_back();
-    if (last_n_chars(serv_host, 10) == "/dns-query") {
-        serv_host.resize(serv_host.size() - 10);
-        path += "/dns-query?dns=";
-    } else path += "/?dns=";
+    size_t host_path_split_pos = serv_host.find('/');
+    if (host_path_split_pos != std::string::npos) {
+        std::string tmp = serv_host.substr(host_path_split_pos);
+        serv_host.resize(serv_host.size() - tmp.size());
+        path = tmp + "?dns=";
+    } else {
+        path = "/dns-query?dns=";
+    }
     path += dns_req;
 
     // Make request
