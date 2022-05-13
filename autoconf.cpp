@@ -438,14 +438,13 @@ int run_autoconf() {
     int port;
     std::string host;
     std::string tmp;
-    std::string doh_server = Profile.doh_server;
     std::cout << "Site domain you want to unblock " << std::endl
               << "(http://example.com or https://example.com or example.com. Can contain port): ";
     std::getline(std::cin, host);
-    std::cout << "DoH server (press enter to use default " << doh_server << "): ";
+    std::cout << "DoH server (press enter to use default " << Profile.doh_server << "): ";
     std::getline(std::cin, tmp);
     if (!tmp.empty())
-        doh_server = tmp;
+        Profile.doh_server = tmp;
 
     if (host.rfind("http://", 0) == 0) {
         is_https = false;
@@ -502,7 +501,7 @@ int run_autoconf() {
     }
 
     // Resolve over DoH
-    std::cout << "Resolving host over DoH server " << doh_server << std::endl;
+    std::cout << "Resolving host over DoH server " << Profile.doh_server << std::endl;
     Profile.doh = true;
     std::string ip;
     bool builtin_dns = false;
@@ -557,7 +556,7 @@ int run_autoconf() {
             for (const std::string &fake_type: fake_types)
                 for (const bool win_size_scale: win_size_scales) {
                     std::cout << "\tTrying " << comb_curr << '/' << comb_all << "..." << std::endl;
-                    set_profile(doh_server, builtin_dns, zero_attack, first_attack, fake_type,
+                    set_profile(Profile.doh_server, builtin_dns, zero_attack, first_attack, fake_type,
                                 fakes_ttl, win_size_scale);
                     if (test_desync_attack_wrapper(host, ip, port, is_https, ctx, store) ==
                         0)
