@@ -72,6 +72,7 @@ const std::string HELP_PAGE(
         "  \t\t\t\t\t\tand other systems that don't have /etc/resolv.conf\n"
         "  --builtin-dns-ip=<ip>\t\t\t\tDNS server IP used by builtin resolver. Default: 8.8.8.8\n"
         "  --builtin-dns-port=<port>\t\t\tDNS server port used by builtin resolver. Default: 53\n"
+        "  --custom-ips=<filename>\t\t\tallows to set custom IPs for specific domains, ignoring DNS/DoH response\n"
         "  --wsize=<number>\t\t\t\tTCP window size. Used to ask server to split Server Hello\n"
         "  --wsfactor=<number>\t\t\t\tTCP window scale factor. Used with wsize option"
 );
@@ -495,6 +496,7 @@ int parse_cmdline(int argc, char *argv[]) {
             {"wrong-seq",        no_argument,       0, 0}, // id 22
             {"mode",             required_argument, 0, 0}, // id 23
             {"whitelist",        required_argument, 0, 0}, // id 24
+            {"custom-ips",       required_argument, 0, 0}, // id 25
             {NULL, 0, NULL,                            0}
     };
 
@@ -723,6 +725,11 @@ int parse_cmdline(int argc, char *argv[]) {
                 Settings_perst.whitelist_path = optarg;
 
                 break;
+
+            case 25: // custom-ips
+                Settings_perst.custom_ips_path = optarg;
+
+                break;
         }
     }
 
@@ -769,6 +776,9 @@ int main(int argc, char *argv[]) {
         return 0;
     if (!Settings_perst.whitelist_path.empty())
         if (load_whitelist() == -1)
+            return -1;
+    if (!Settings_perst.custom_ips_path.empty())
+        if (load_custom_ips() == -1)
             return -1;
     ignore_sigpipe();
 

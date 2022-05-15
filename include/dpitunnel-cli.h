@@ -95,6 +95,9 @@ struct Settings_perst_s {
     std::set<std::string> whitelist_domains;
     std::set<std::string> whitelist_ips;
 
+    std::string custom_ips_path;
+    std::map<std::string, std::string> custom_ips;
+
     std::string pid_file;
     bool daemon = false;
 };

@@ -288,3 +288,36 @@ int load_whitelist() {
     file.close();
     return 0;
 }
+
+std::string find_custom_ip(const std::string &domain) {
+    auto found = Settings_perst.custom_ips.find(domain);
+    return found != Settings_perst.custom_ips.end() ? found->second : "";
+}
+
+int load_custom_ips() {
+    std::ifstream file;
+    file.open(Settings_perst.custom_ips_path);
+    if (!file) {
+        std::cerr << "Failed to load custom IPs. File "
+                  << Settings_perst.custom_ips_path << " not found" << std::endl;
+        return -1;
+    }
+
+    std::string input;
+    size_t pos;
+    std::pair<std::string, std::string> entry;
+    while (std::getline(file, input)) {
+        pos = input.find(' ');
+        if (pos == std::string::npos)
+            continue;
+        entry = std::make_pair(
+                input.substr(0, pos),
+                input.substr(pos + 1)
+        );
+        if (!entry.first.empty() && !entry.second.empty())
+            Settings_perst.custom_ips.insert({entry.first, entry.second});
+    }
+
+    file.close();
+    return 0;
+}

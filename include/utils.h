@@ -29,4 +29,8 @@ bool match_whitelist_ip(const std::string &ip);
 
 int load_whitelist();
 
+std::string find_custom_ip(const std::string &domain);
+
+int load_custom_ips();
+
 #endif //UTILS_H

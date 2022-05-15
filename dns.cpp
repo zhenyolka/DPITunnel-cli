@@ -316,6 +316,12 @@ int resolve_host(const std::string &host, std::string &ip) {
         return 0;
     }
 
+    std::string custom_ip = find_custom_ip(host);
+    if (!custom_ip.empty()) {
+        ip = custom_ip;
+        return 0;
+    }
+
     if (Profile.doh)
         return resolve_host_over_doh(host, ip);
     else if (Profile.builtin_dns)
