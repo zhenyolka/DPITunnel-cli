@@ -124,13 +124,6 @@ void remove_proxy_strings(std::string &request, unsigned int &last_char) {
         last_char -= http_str.size();
     }
 
-    // Remove www
-    const std::string www_str("www.");
-    if (last_char >= www_str.size() && request.find(www_str, method.size()) == method.size() + 1) {
-        request.erase(method.size() + 1, www_str.size());
-        last_char -= www_str.size();
-    }
-
     // Remove domain
     if (last_char >= host.size() && request.find(host, method.size()) == method.size() + 1) {
         request.erase(method.size() + 1, host.size());
@@ -145,8 +138,12 @@ void remove_proxy_strings(std::string &request, unsigned int &last_char) {
         last_char -= port_str.size();
     }
 
-    const std::string proxy_conn_str("Proxy-Connection: keep-alive\r\n");
-    size_t proxy_connection_hdr_start = request.find(proxy_conn_str);
+    std::string request_lower = request;
+    std::transform(request_lower.begin(), request_lower.end(), request_lower.begin(),
+        [](unsigned char c){ return std::tolower(c); });
+
+    const std::string proxy_conn_str("proxy-connection: keep-alive\r\n");
+    size_t proxy_connection_hdr_start = request_lower.find(proxy_conn_str);
     if (last_char >= proxy_conn_str.size() && proxy_connection_hdr_start != std::string::npos) {
         request.erase(proxy_connection_hdr_start, proxy_conn_str.size());
         last_char -= proxy_conn_str.size();
