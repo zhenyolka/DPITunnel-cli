@@ -36,7 +36,7 @@ int connect_with_timeout(int sockfd, const struct sockaddr *addr, socklen_t addr
     do {
         if (connect(sockfd, addr, addrlen) < 0) {
             // Did connect return an error? If so, we'll fail.
-            if ((errno != EWOULDBLOCK) && (errno != EINPROGRESS)) {
+            if ((errno != EWOULDBLOCK) && (errno != EAGAIN) && (errno != EINPROGRESS)) {
                 rc = -1;
             }
                 // Otherwise, we'll wait for it to complete.
@@ -361,7 +361,7 @@ int recv_string(int socket, std::string &message, unsigned int &last_char,
         if (recv_time != NULL)
             stop = std::chrono::high_resolution_clock::now();
         if (read_size < 0) {
-            if (errno == EWOULDBLOCK) break;
+            if (errno == EWOULDBLOCK || errno == EAGAIN) break;
             if (errno == EINTR) continue; // All is good. It is just interrrupt
             else {
                 std::cerr << "There is critical read error. Can't process client. Errno: "
@@ -416,6 +416,10 @@ int send_string(int socket, const std::string &string_to_send, unsigned int last
                              MSG_NOSIGNAL);
 
         if (send_size < 0) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
             if (errno == EINTR) continue; // All is good. It is just interrrupt.
             else {
                 std::cerr << "There is critical send error. Can't process client. Errno: "
