@@ -198,6 +198,7 @@ void process_client_cycle(int client_socket) {
             if (sniff_thread.joinable()) sniff_thread.join();
         }
         send_string(client_socket, CONNECTION_ERROR_RESPONSE, CONNECTION_ERROR_RESPONSE.size());
+        close(server_socket);
         close(client_socket);
         return;
     }
